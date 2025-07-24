@@ -101,3 +101,110 @@
         total-interest
     )
 )
+
+;; Automated Liquidation Check & Execution
+(define-private (check-liquidation (loan-id uint))
+    (let
+        (
+            (loan (unwrap! (map-get? loans {loan-id: loan-id}) ERR-LOAN-NOT-FOUND))
+            (btc-price (unwrap! (get price (map-get? collateral-prices {asset: "BTC"})) ERR-NOT-INITIALIZED))
+            (current-ratio (calculate-collateral-ratio (get collateral-amount loan) (get loan-amount loan) btc-price))
+        )
+        (if (<= current-ratio (var-get liquidation-threshold))
+            (liquidate-position loan-id)
+            (ok true)
+        )
+    )
+)
+
+;; Execute Liquidation of Undercollateralized Position
+(define-private (liquidate-position (loan-id uint))
+    (let
+        (
+            (loan (unwrap! (map-get? loans {loan-id: loan-id}) ERR-LOAN-NOT-FOUND))
+            (borrower (get borrower loan))
+        )
+        (begin
+            (map-set loans
+                {loan-id: loan-id}
+                (merge loan {status: "liquidated"})
+            )
+            (map-delete user-loans {user: borrower})
+            (ok true)
+        )
+    )
+)
+
+;; Validate Loan ID Within Acceptable Range
+(define-private (validate-loan-id (loan-id uint))
+    (and 
+        (> loan-id u0)
+        (<= loan-id (var-get total-loans-issued))
+    )
+)
+
+;; Validate Asset Against Supported List
+(define-private (is-valid-asset (asset (string-ascii 3)))
+    (is-some (index-of VALID-ASSETS asset))
+)
+
+;; Validate Price Data Integrity
+(define-private (is-valid-price (price uint))
+    (and 
+        (> price u0)
+        (<= price u1000000000000) ;; Maximum reasonable price ceiling
+    )
+)
+
+;; Helper Function for Loan List Filtering
+(define-private (not-equal-loan-id (id uint))
+    (not (is-eq id id))
+)
+
+;; PUBLIC FUNCTIONS - Platform Administration
+
+;; Initialize Protocol - Required Before Operations
+(define-public (initialize-platform)
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (asserts! (not (var-get platform-initialized)) ERR-ALREADY-INITIALIZED)
+        (var-set platform-initialized true)
+        (ok true)
+    )
+)
+
+;; Update Minimum Collateral Ratio Requirement
+(define-public (update-collateral-ratio (new-ratio uint))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (asserts! (>= new-ratio u110) ERR-INVALID-AMOUNT)
+        (var-set minimum-collateral-ratio new-ratio)
+        (ok true)
+    )
+)
+
+;; Update Liquidation Threshold Parameters
+(define-public (update-liquidation-threshold (new-threshold uint))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (asserts! (>= new-threshold u100) ERR-INVALID-AMOUNT)
+        (var-set liquidation-threshold new-threshold)
+        (ok true)
+    )
+)
+
+;; Update Oracle Price Feed Data
+(define-public (update-price-feed (asset (string-ascii 3)) (new-price uint))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        ;; Comprehensive Asset & Price Validation
+        (asserts! (is-valid-asset asset) ERR-INVALID-ASSET)
+        (asserts! (is-valid-price new-price) ERR-INVALID-PRICE)
+        
+        ;; Execute Price Update After Validation
+        (ok (map-set collateral-prices
+            {asset: asset}
+            {price: new-price}
+        ))
+    )
+)
